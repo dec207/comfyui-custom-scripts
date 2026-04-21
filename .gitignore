@@ -1,0 +1,5 @@
+﻿*.safetensors
+models/
+*.ckpt
+*.pt
+*.bin
