@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for generated images. Defaults to ../img_output relative to --repo-dir.",
+        help="Directory for generated images. Defaults to ../img_bank relative to --repo-dir.",
     )
     parser.add_argument(
         "--workflow",
