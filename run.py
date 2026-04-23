@@ -24,6 +24,7 @@ DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_REPEAT = 1
 DEFAULT_SEED_STEP = 1
+OPTION_GROUPS = ("poses", "outfits")
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +60,21 @@ def parse_args() -> argparse.Namespace:
             "Workflow file or character name to run. Repeat for multiple values. "
             "Defaults to all JSON files in workflows/."
         ),
+    )
+    parser.add_argument(
+        "--character",
+        default=None,
+        help="Character name to run from workflows/base. If omitted with no --workflow, an interactive menu is shown.",
+    )
+    parser.add_argument(
+        "--pose",
+        default=None,
+        help="Pose option name from options/poses.",
+    )
+    parser.add_argument(
+        "--outfit",
+        default=None,
+        help="Outfit option name from options/outfits.",
     )
     parser.add_argument(
         "--batch-size",
@@ -129,7 +145,7 @@ def main() -> int:
     repo_dir = args.repo_dir.resolve()
     comfyui_dir = resolve_comfyui_dir(args.comfyui_dir, repo_dir)
     output_dir = resolve_output_dir(args.output_dir, repo_dir)
-    workflow_paths = resolve_workflows(repo_dir, args.workflow)
+    workflow_paths, selected_options = resolve_run_request(repo_dir, args)
     python_executable = resolve_python_executable(args.python, comfyui_dir)
     accelerator = detect_accelerator(python_executable)
     runtime_args = get_runtime_args(accelerator)
@@ -189,7 +205,8 @@ def main() -> int:
                     prompt=prompt,
                     workflow_path=workflow_path,
                     batch_size=args.batch_size,
-                    seed_offset=repeat_index * args.seed_step,
+                    seed_offset=selected_options.seed_offset + (repeat_index * args.seed_step),
+                    selected_options=selected_options,
                 )
                 run_label = workflow_path.name
                 if args.repeat > 1:
@@ -228,6 +245,119 @@ def resolve_output_dir(output_dir: Path | None, repo_dir: Path) -> Path:
     if output_dir is not None:
         return output_dir.expanduser().resolve()
     return (repo_dir.parent / "img_bank").resolve()
+
+
+class SelectedOptions:
+    def __init__(self, options: list[dict[str, Any]] | None = None) -> None:
+        self.options = options or []
+
+    @property
+    def seed_offset(self) -> int:
+        return sum(int(option.get("seed_offset", 0)) for option in self.options)
+
+    @property
+    def filename_suffixes(self) -> list[str]:
+        suffixes = []
+        for option in self.options:
+            suffix = option.get("filename_suffix")
+            if isinstance(suffix, str) and suffix:
+                suffixes.append(suffix)
+        return suffixes
+
+
+def resolve_run_request(repo_dir: Path, args: argparse.Namespace) -> tuple[list[Path], SelectedOptions]:
+    if args.workflow:
+        return resolve_workflows(repo_dir, args.workflow), load_cli_options(repo_dir, args)
+
+    if args.character:
+        workflow_path = resolve_character_workflow(repo_dir, args.character)
+        return [workflow_path], load_cli_options(repo_dir, args)
+
+    workflow_path, selected_options = interactive_selection(repo_dir)
+    return [workflow_path], selected_options
+
+
+def load_cli_options(repo_dir: Path, args: argparse.Namespace) -> SelectedOptions:
+    options = []
+    if args.pose:
+        options.append(load_option(repo_dir, "poses", args.pose))
+    if args.outfit:
+        options.append(load_option(repo_dir, "outfits", args.outfit))
+    return SelectedOptions(options)
+
+
+def interactive_selection(repo_dir: Path) -> tuple[Path, SelectedOptions]:
+    characters = list_characters(repo_dir)
+    character = prompt_choice("Character", characters)
+    pose = prompt_choice("Pose", list_options(repo_dir, "poses"))
+    outfit = prompt_choice("Outfit", list_options(repo_dir, "outfits"))
+    workflow_path = resolve_character_workflow(repo_dir, character["name"])
+    return workflow_path, SelectedOptions([pose, outfit])
+
+
+def prompt_choice(label: str, choices: list[dict[str, Any]]) -> dict[str, Any]:
+    if not choices:
+        raise FileNotFoundError(f"No choices available for {label}.")
+
+    print(f"\n{label}:")
+    for index, choice in enumerate(choices, start=1):
+        print(f"  {index}. {choice['label']}")
+
+    while True:
+        raw = input("Choose number: ").strip()
+        if raw.isdigit():
+            index = int(raw)
+            if 1 <= index <= len(choices):
+                return choices[index - 1]
+        print(f"Enter a number from 1 to {len(choices)}.")
+
+
+def list_characters(repo_dir: Path) -> list[dict[str, Any]]:
+    base_dir = repo_dir / "workflows" / "base"
+    characters = []
+    for path in sorted(base_dir.glob("workflow_*_base.json")):
+        name = path.stem.removeprefix("workflow_").removesuffix("_base")
+        characters.append({"name": name, "label": name, "path": str(path)})
+    return characters
+
+
+def list_options(repo_dir: Path, group: str) -> list[dict[str, Any]]:
+    options_dir = repo_dir / "options" / group
+    options = []
+    for path in sorted(options_dir.glob("*.json")):
+        option = load_json(path)
+        option["name"] = path.stem
+        option["label"] = option.get("label", path.stem)
+        options.append(option)
+    return options
+
+
+def load_option(repo_dir: Path, group: str, name: str) -> dict[str, Any]:
+    option_path = repo_dir / "options" / group / f"{name}.json"
+    if not option_path.exists():
+        available = ", ".join(option["name"] for option in list_options(repo_dir, group))
+        raise FileNotFoundError(f"Unknown {group} option '{name}'. Available: {available}")
+    option = load_json(option_path)
+    option["name"] = option_path.stem
+    option["label"] = option.get("label", option_path.stem)
+    return option
+
+
+def resolve_character_workflow(repo_dir: Path, character: str) -> Path:
+    normalized = character.strip()
+    candidates = [
+        repo_dir / "workflows" / "base" / f"workflow_{normalized}_base.json",
+        repo_dir / "workflows" / "base" / f"workflow_{normalized}.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError(f"Base workflow not found for character: {character}")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8-sig") as handle:
+        return json.load(handle)
 
 
 def resolve_workflows(repo_dir: Path, requested: list[str]) -> list[Path]:
@@ -485,11 +615,14 @@ def prepare_prompt(
     workflow_path: Path,
     batch_size: int,
     seed_offset: int = 0,
+    selected_options: SelectedOptions | None = None,
 ) -> dict[str, Any]:
     prepared = json.loads(json.dumps(prompt))
+    selected_options = selected_options or SelectedOptions()
 
-    sampler_node = prepared.get("3")
-    if isinstance(sampler_node, dict):
+    apply_prompt_options(prepared, selected_options)
+
+    for sampler_node in sampler_nodes(prepared):
         inputs = sampler_node.setdefault("inputs", {})
         if "seed" in inputs and isinstance(inputs["seed"], int):
             inputs["seed"] = inputs["seed"] + seed_offset
@@ -503,15 +636,74 @@ def prepare_prompt(
     image_node = prepared.get("9")
     if isinstance(image_node, dict):
         inputs = image_node.setdefault("inputs", {})
-        inputs["filename_prefix"] = workflow_name_to_prefix(workflow_path)
+        inputs["filename_prefix"] = workflow_name_to_prefix(
+            workflow_path,
+            selected_options.filename_suffixes,
+        )
 
     return prepared
 
 
-def workflow_name_to_prefix(workflow_path: Path) -> str:
+def apply_prompt_options(prompt: dict[str, Any], selected_options: SelectedOptions) -> None:
+    positive_parts = []
+    negative_parts = []
+    for option in selected_options.options:
+        positive = option.get("positive_addon")
+        negative = option.get("negative_addon")
+        if isinstance(positive, str) and positive:
+            positive_parts.append(positive)
+        if isinstance(negative, str) and negative:
+            negative_parts.append(negative)
+
+    if not positive_parts and not negative_parts:
+        return
+
+    positive_node_id, negative_node_id = find_conditioning_node_ids(prompt)
+    append_text(prompt, positive_node_id, positive_parts)
+    append_text(prompt, negative_node_id, negative_parts)
+
+
+def find_conditioning_node_ids(prompt: dict[str, Any]) -> tuple[str | None, str | None]:
+    for sampler_node in sampler_nodes(prompt):
+        inputs = sampler_node.get("inputs", {})
+        positive = inputs.get("positive")
+        negative = inputs.get("negative")
+        positive_id = positive[0] if isinstance(positive, list) and positive else None
+        negative_id = negative[0] if isinstance(negative, list) and negative else None
+        return positive_id, negative_id
+    return None, None
+
+
+def append_text(prompt: dict[str, Any], node_id: str | None, additions: list[str]) -> None:
+    if not node_id or not additions:
+        return
+    node = prompt.get(node_id)
+    if not isinstance(node, dict):
+        return
+    inputs = node.setdefault("inputs", {})
+    existing = inputs.get("text", "")
+    if not isinstance(existing, str):
+        return
+    inputs["text"] = ", ".join([existing, *additions])
+
+
+def sampler_nodes(prompt: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = []
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        if isinstance(class_type, str) and "Sampler" in class_type:
+            nodes.append(node)
+    return nodes
+
+
+def workflow_name_to_prefix(workflow_path: Path, suffixes: list[str] | None = None) -> str:
     name = workflow_path.stem
     if name.startswith("workflow_"):
         name = name[len("workflow_") :]
+    if suffixes:
+        name = "_".join([name, *suffixes])
     return f"{name}_v3"
 
 

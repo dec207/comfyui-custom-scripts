@@ -1,0 +1,7 @@
+{
+  "label": "Sitting",
+  "positive_addon": "sitting pose, relaxed posture, hands naturally placed",
+  "negative_addon": "standing, running, jumping",
+  "filename_suffix": "sitting",
+  "seed_offset": 200
+}

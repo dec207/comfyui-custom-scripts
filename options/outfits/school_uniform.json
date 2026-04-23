@@ -1,0 +1,7 @@
+{
+  "label": "School uniform",
+  "positive_addon": "wearing a neat school uniform, simple clean styling",
+  "negative_addon": "hoodie, dress, apron, leather jacket, complex costume",
+  "filename_suffix": "school_uniform",
+  "seed_offset": 2000
+}

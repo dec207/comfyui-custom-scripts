@@ -1,0 +1,7 @@
+{
+  "label": "Front standing",
+  "positive_addon": "front view, standing straight, relaxed arms, neutral body posture",
+  "negative_addon": "sitting, running, jumping, side view, back view",
+  "filename_suffix": "front_standing",
+  "seed_offset": 0
+}

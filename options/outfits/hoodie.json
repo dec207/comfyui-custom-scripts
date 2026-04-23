@@ -1,0 +1,7 @@
+{
+  "label": "Oversized hoodie",
+  "positive_addon": "wearing an oversized grey hoodie, casual minimal styling",
+  "negative_addon": "dress, school uniform, apron, suit, complex costume",
+  "filename_suffix": "hoodie",
+  "seed_offset": 1000
+}

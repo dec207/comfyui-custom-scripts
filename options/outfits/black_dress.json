@@ -1,0 +1,7 @@
+{
+  "label": "Black dress",
+  "positive_addon": "wearing an elegant simple black dress, minimal accessories",
+  "negative_addon": "hoodie, school uniform, apron, sportswear",
+  "filename_suffix": "black_dress",
+  "seed_offset": 3000
+}

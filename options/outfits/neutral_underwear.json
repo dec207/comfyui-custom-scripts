@@ -1,0 +1,7 @@
+{
+  "label": "Neutral underwear",
+  "positive_addon": "plain neutral undergarments, no fashion details",
+  "negative_addon": "fashion outfit, dress, jacket, school uniform, hoodie",
+  "filename_suffix": "neutral_underwear",
+  "seed_offset": 0
+}
