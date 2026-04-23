@@ -21,6 +21,8 @@ DEFAULT_PORT = 8188
 DEFAULT_STARTUP_TIMEOUT = 120
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_BATCH_SIZE = 1
+DEFAULT_REPEAT = 1
+DEFAULT_SEED_STEP = 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +64,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_BATCH_SIZE,
         help=f"Batch size applied to node 5 when present. Default: {DEFAULT_BATCH_SIZE}.",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=DEFAULT_REPEAT,
+        help=f"Sequential runs per workflow with incremented seeds. Default: {DEFAULT_REPEAT}.",
+    )
+    parser.add_argument(
+        "--seed-step",
+        type=int,
+        default=DEFAULT_SEED_STEP,
+        help=f"Seed increment between repeated runs. Default: {DEFAULT_SEED_STEP}.",
     )
     parser.add_argument(
         "--host",
@@ -163,15 +177,20 @@ def main() -> int:
 
         for workflow_path in workflow_paths:
             prompt = load_workflow(workflow_path)
-            prepared_prompt = prepare_prompt(
-                prompt=prompt,
-                workflow_path=workflow_path,
-                batch_size=args.batch_size,
-            )
-            prompt_id = queue_prompt(base_url, prepared_prompt)
-            print(f"Queued {workflow_path.name} as prompt {prompt_id}")
-            wait_for_prompt(base_url, prompt_id, workflow_path.name, args.poll_interval)
-            print(f"Completed {workflow_path.name}")
+            for repeat_index in range(args.repeat):
+                prepared_prompt = prepare_prompt(
+                    prompt=prompt,
+                    workflow_path=workflow_path,
+                    batch_size=args.batch_size,
+                    seed_offset=repeat_index * args.seed_step,
+                )
+                run_label = workflow_path.name
+                if args.repeat > 1:
+                    run_label = f"{workflow_path.name} ({repeat_index + 1}/{args.repeat})"
+                prompt_id = queue_prompt(base_url, prepared_prompt)
+                print(f"Queued {run_label} as prompt {prompt_id}")
+                wait_for_prompt(base_url, prompt_id, run_label, args.poll_interval)
+                print(f"Completed {run_label}")
     finally:
         if extra_model_config and extra_model_config.exists():
             extra_model_config.unlink(missing_ok=True)
@@ -418,8 +437,19 @@ def load_workflow(workflow_path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def prepare_prompt(prompt: dict[str, Any], workflow_path: Path, batch_size: int) -> dict[str, Any]:
+def prepare_prompt(
+    prompt: dict[str, Any],
+    workflow_path: Path,
+    batch_size: int,
+    seed_offset: int = 0,
+) -> dict[str, Any]:
     prepared = json.loads(json.dumps(prompt))
+
+    sampler_node = prepared.get("3")
+    if isinstance(sampler_node, dict):
+        inputs = sampler_node.setdefault("inputs", {})
+        if "seed" in inputs and isinstance(inputs["seed"], int):
+            inputs["seed"] = inputs["seed"] + seed_offset
 
     latent_node = prepared.get("5")
     if isinstance(latent_node, dict):
