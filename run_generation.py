@@ -20,7 +20,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8188
 DEFAULT_STARTUP_TIMEOUT = 120
 DEFAULT_POLL_INTERVAL = 2.0
-DEFAULT_BATCH_SIZE = 5
+DEFAULT_BATCH_SIZE = 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,6 +116,7 @@ def main() -> int:
     output_dir = resolve_output_dir(args.output_dir, repo_dir)
     workflow_paths = resolve_workflows(repo_dir, args.workflow)
     python_executable = resolve_python_executable(args.python, comfyui_dir)
+    accelerator = detect_accelerator(python_executable)
 
     ensure_path(comfyui_dir, "ComfyUI directory")
     ensure_path(comfyui_dir / "main.py", "ComfyUI main.py")
@@ -125,6 +126,7 @@ def main() -> int:
     print(f"ComfyUI: {comfyui_dir}")
     print(f"Output: {output_dir}")
     print(f"Python: {python_executable}")
+    print(f"Accelerator: {accelerator}")
     print("Workflows:")
     for workflow_path in workflow_paths:
         print(f"  - {workflow_path.name}")
@@ -260,6 +262,58 @@ def resolve_python_executable(explicit: str | None, comfyui_dir: Path) -> str:
             return resolved
 
     raise FileNotFoundError("Could not find a Python executable for ComfyUI.")
+
+
+def detect_accelerator(python_executable: str) -> str:
+    probe_script = """
+import json
+import subprocess
+import sys
+
+result = {"torch_available": False, "cuda_available": False, "device_name": None, "nvidia_smi": False}
+try:
+    import torch
+    result["torch_available"] = True
+    result["cuda_available"] = bool(torch.cuda.is_available())
+    if result["cuda_available"]:
+        result["device_name"] = torch.cuda.get_device_name(0)
+except Exception:
+    pass
+
+try:
+    completed = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    result["nvidia_smi"] = completed.returncode == 0 and bool(completed.stdout.strip())
+except Exception:
+    pass
+
+print(json.dumps(result))
+"""
+    completed = subprocess.run(
+        [python_executable, "-c", probe_script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+
+    if result["cuda_available"]:
+        device_name = result["device_name"] or "CUDA GPU"
+        return f"GPU ({device_name})"
+    if result["nvidia_smi"]:
+        raise RuntimeError(
+            "An NVIDIA GPU is present, but the selected Python environment cannot use CUDA. "
+            "Refusing to continue with a CPU fallback."
+        )
+    if result["torch_available"]:
+        return "CPU"
+    return "Unknown"
 
 
 def create_extra_model_paths_yaml(repo_dir: Path) -> Path:

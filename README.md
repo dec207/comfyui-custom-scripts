@@ -76,5 +76,7 @@ python3 run_generation.py --dry-run
 
 - Generated files are renamed from the workflow filename, such as `Da-un_v3_00001_.png`.
 - If a ComfyUI server is already running on `127.0.0.1:8188`, the runner reuses it instead of starting a second one.
-- The default output directory is `../img_bank` relative to this repository, and it is created automatically if missing.
+- The default output directory is `C:\workspace\img_bank`, created under the workspace root by default.
+- The default batch size is `1`, so workflows generate images sequentially rather than in parallel batches.
+- On systems with an NVIDIA GPU, the runner checks for CUDA support in the selected Python environment and refuses to fall back to CPU silently.
 - `folder_paths.py` is kept as a reference file, but `run_generation.py` is the recommended way to run these workflows across macOS and Windows.
