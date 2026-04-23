@@ -171,6 +171,7 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    sync_control_images(repo_dir, comfyui_dir, selected_options)
     warn_missing_models(comfyui_dir, repo_dir, workflow_paths, args.use_local_models)
 
     extra_model_config = None
@@ -263,6 +264,14 @@ class SelectedOptions:
             if isinstance(suffix, str) and suffix:
                 suffixes.append(suffix)
         return suffixes
+
+    @property
+    def control_options(self) -> list[dict[str, Any]]:
+        return [
+            option
+            for option in self.options
+            if isinstance(option.get("control_image"), str)
+        ]
 
 
 def resolve_run_request(repo_dir: Path, args: argparse.Namespace) -> tuple[list[Path], SelectedOptions]:
@@ -358,6 +367,18 @@ def resolve_character_workflow(repo_dir: Path, character: str) -> Path:
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
+
+
+def sync_control_images(repo_dir: Path, comfyui_dir: Path, selected_options: SelectedOptions) -> None:
+    input_dir = comfyui_dir / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    for option in selected_options.control_options:
+        control_image = option["control_image"]
+        source = (repo_dir / control_image).resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"Control image not found: {source}")
+        shutil.copy2(source, input_dir / source.name)
 
 
 def resolve_workflows(repo_dir: Path, requested: list[str]) -> list[Path]:
@@ -621,6 +642,7 @@ def prepare_prompt(
     selected_options = selected_options or SelectedOptions()
 
     apply_prompt_options(prepared, selected_options)
+    apply_controlnet_options(prepared, selected_options)
 
     for sampler_node in sampler_nodes(prepared):
         inputs = sampler_node.setdefault("inputs", {})
@@ -642,6 +664,71 @@ def prepare_prompt(
         )
 
     return prepared
+
+
+def apply_controlnet_options(prompt: dict[str, Any], selected_options: SelectedOptions) -> None:
+    for option in selected_options.control_options:
+        apply_controlnet_option(prompt, option)
+
+
+def apply_controlnet_option(prompt: dict[str, Any], option: dict[str, Any]) -> None:
+    sampler_node = first_sampler_node(prompt)
+    if sampler_node is None:
+        return
+
+    inputs = sampler_node.get("inputs", {})
+    positive = inputs.get("positive")
+    negative = inputs.get("negative")
+    if not isinstance(positive, list) or not isinstance(negative, list):
+        return
+
+    positive_id = positive[0]
+    negative_id = negative[0]
+    control_image = Path(option["control_image"]).name
+
+    loader_id = allocate_node_id(prompt)
+    prompt[loader_id] = {
+        "class_type": "ControlNetLoader",
+        "inputs": {
+            "control_net_name": option.get("controlnet_model", "OpenPoseXL2.safetensors"),
+        },
+    }
+    image_id = allocate_node_id(prompt)
+    prompt[image_id] = {
+        "class_type": "LoadImage",
+        "inputs": {
+            "image": control_image,
+        },
+    }
+    apply_id = allocate_node_id(prompt)
+    prompt[apply_id] = {
+        "class_type": "ControlNetApplyAdvanced",
+        "inputs": {
+            "positive": [positive_id, 0],
+            "negative": [negative_id, 0],
+            "control_net": [loader_id, 0],
+            "image": [image_id, 0],
+            "strength": float(option.get("control_strength", 0.75)),
+            "start_percent": float(option.get("control_start", 0.0)),
+            "end_percent": float(option.get("control_end", 0.85)),
+            "vae": ["4", 2],
+        },
+    }
+    inputs["positive"] = [apply_id, 0]
+    inputs["negative"] = [apply_id, 1]
+
+
+def allocate_node_id(prompt: dict[str, Any]) -> str:
+    numeric_ids = [int(key) for key in prompt.keys() if str(key).isdigit()]
+    next_id = max(numeric_ids, default=0) + 1
+    while str(next_id) in prompt:
+        next_id += 1
+    return str(next_id)
+
+
+def first_sampler_node(prompt: dict[str, Any]) -> dict[str, Any] | None:
+    nodes = sampler_nodes(prompt)
+    return nodes[0] if nodes else None
 
 
 def apply_prompt_options(prompt: dict[str, Any], selected_options: SelectedOptions) -> None:

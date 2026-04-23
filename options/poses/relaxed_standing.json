@@ -3,5 +3,10 @@
   "positive_addon": "standing with a relaxed posture, slight weight shift, natural arms",
   "negative_addon": "sitting, running, jumping, stiff pose",
   "filename_suffix": "relaxed_standing",
-  "seed_offset": 100
+  "seed_offset": 100,
+  "control_image": "assets/poses/relaxed_standing_openpose.png",
+  "controlnet_model": "OpenPoseXL2.safetensors",
+  "control_strength": 0.7,
+  "control_start": 0.0,
+  "control_end": 0.85
 }
