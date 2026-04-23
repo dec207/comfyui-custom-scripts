@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -131,6 +132,7 @@ def main() -> int:
     workflow_paths = resolve_workflows(repo_dir, args.workflow)
     python_executable = resolve_python_executable(args.python, comfyui_dir)
     accelerator = detect_accelerator(python_executable)
+    runtime_args = get_runtime_args(accelerator)
 
     ensure_path(comfyui_dir, "ComfyUI directory")
     ensure_path(comfyui_dir / "main.py", "ComfyUI main.py")
@@ -141,6 +143,10 @@ def main() -> int:
     print(f"Output: {output_dir}")
     print(f"Python: {python_executable}")
     print(f"Accelerator: {accelerator}")
+    if runtime_args:
+        print("Runtime args:")
+        for runtime_arg in runtime_args:
+            print(f"  - {runtime_arg}")
     print("Workflows:")
     for workflow_path in workflow_paths:
         print(f"  - {workflow_path.name}")
@@ -170,6 +176,7 @@ def main() -> int:
                 host=args.host,
                 port=args.port,
                 extra_model_config=extra_model_config,
+                runtime_args=runtime_args,
             )
             started_here = True
             wait_for_server(base_url, args.startup_timeout, process)
@@ -286,16 +293,29 @@ def resolve_python_executable(explicit: str | None, comfyui_dir: Path) -> str:
 def detect_accelerator(python_executable: str) -> str:
     probe_script = """
 import json
+import platform
 import subprocess
-import sys
 
-result = {"torch_available": False, "cuda_available": False, "device_name": None, "nvidia_smi": False}
+result = {
+    "torch_available": False,
+    "cuda_available": False,
+    "cuda_device_name": None,
+    "nvidia_smi": False,
+    "platform_system": platform.system(),
+    "platform_machine": platform.machine(),
+    "mps_supported": False,
+    "mps_available": False,
+}
 try:
     import torch
     result["torch_available"] = True
     result["cuda_available"] = bool(torch.cuda.is_available())
     if result["cuda_available"]:
-        result["device_name"] = torch.cuda.get_device_name(0)
+        result["cuda_device_name"] = torch.cuda.get_device_name(0)
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None:
+        result["mps_supported"] = bool(mps_backend.is_built())
+        result["mps_available"] = bool(mps_backend.is_available())
 except Exception:
     pass
 
@@ -323,16 +343,37 @@ print(json.dumps(result))
     result = json.loads(completed.stdout)
 
     if result["cuda_available"]:
-        device_name = result["device_name"] or "CUDA GPU"
+        device_name = result["cuda_device_name"] or "CUDA GPU"
         return f"GPU ({device_name})"
+    if result["mps_available"]:
+        return "GPU (Apple Silicon MPS)"
     if result["nvidia_smi"]:
         raise RuntimeError(
             "An NVIDIA GPU is present, but the selected Python environment cannot use CUDA. "
             "Refusing to continue with a CPU fallback."
         )
+    if (
+        result["platform_system"] == "Darwin"
+        and result["platform_machine"] == "arm64"
+        and result["torch_available"]
+    ):
+        raise RuntimeError(
+            "Apple Silicon was detected, but the selected Python environment cannot use MPS. "
+            "Refusing to continue with a CPU fallback."
+        )
     if result["torch_available"]:
         return "CPU"
     return "Unknown"
+
+
+def get_runtime_args(accelerator: str) -> list[str]:
+    if accelerator == "GPU (Apple Silicon MPS)":
+        return [
+            "--force-non-blocking",
+            "--force-channels-last",
+            "--use-pytorch-cross-attention",
+        ]
+    return []
 
 
 def create_extra_model_paths_yaml(repo_dir: Path) -> Path:
@@ -372,6 +413,7 @@ def start_comfyui(
     host: str,
     port: int,
     extra_model_config: Path | None,
+    runtime_args: list[str],
 ) -> subprocess.Popen[str]:
     command = [
         python_executable,
@@ -385,6 +427,7 @@ def start_comfyui(
     ]
     if extra_model_config:
         command.extend(["--extra-model-paths-config", str(extra_model_config)])
+    command.extend(runtime_args)
 
     print("Starting ComfyUI:")
     print("  " + format_command(command))
